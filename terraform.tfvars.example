@@ -1,0 +1,16 @@
+cluster_name = "techchallenger-fase1"
+environment  = "dev"
+
+vpc_cidr             = "10.0.0.0/16"
+availability_zones   = ["us-east-1a", "us-east-1b", "us-east-1c"]
+public_subnet_cidrs  = ["10.0.0.0/20", "10.0.16.0/20", "10.0.32.0/20"]
+private_subnet_cidrs = ["10.0.128.0/20", "10.0.144.0/20", "10.0.160.0/20"]
+single_nat_gateway   = true
+
+node_instance_types     = ["t3.micro"]
+node_disk_size          = 10
+node_group_min_size     = 1
+node_group_max_size     = 3
+node_group_desired_size = 2
+
+ecr_repository_name = "techchallenger-fase1"

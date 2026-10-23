@@ -1,0 +1,100 @@
+name: Terraform Apply - VPC / EKS / ECR
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_apply:
+        description: "Confirma a criação/atualização da infraestrutura AWS (consome crédito do Learner Lab)?"
+        required: true
+        type: choice
+        options:
+          - "no"
+          - "yes"
+        default: "no"
+      node_instance_type:
+        description: "Tipo de instância EC2 para os nodes do EKS (sobrescreve o default t3.micro definido em variables.tf)"
+        required: true
+        type: choice
+        options:
+          - "t3.micro"
+          - "t3.small"
+        default: "t3.micro"
+
+jobs:
+  terraform-apply:
+    name: Provisionar infraestrutura via Terraform
+    runs-on: ubuntu-latest
+    environment: aws-deploy
+    permissions:
+      contents: read
+    steps:
+      - name: Verificar confirmação de apply
+        run: |
+          if [ "${{ github.event.inputs.confirm_apply }}" != "yes" ]; then
+            echo "::error::Apply não confirmado (confirm_apply='${{ github.event.inputs.confirm_apply }}'). Selecione 'yes' para prosseguir."
+            exit 1
+          fi
+          echo "Apply confirmado, prosseguindo."
+
+      - name: Checkout do código
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.7.x"
+
+      - name: Configurar credenciais AWS
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: us-east-1
+
+      - name: Terraform Init
+        run: terraform init -input=false
+
+      - name: Terraform Plan
+        env:
+          TF_VAR_node_instance_types: '["${{ github.event.inputs.node_instance_type }}"]'
+        run: terraform plan -input=false -out=tfplan
+
+      - name: Upload do plano como artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tfplan
+          path: tfplan
+          retention-days: 7
+
+      - name: Terraform Apply
+        run: terraform apply -input=false -auto-approve tfplan
+
+      - name: Instalar kubectl
+        uses: azure/setup-kubectl@v4
+        with:
+          version: 'v1.30.0'
+
+      - name: Configurar kubeconfig do cluster EKS
+        run: |
+          aws eks update-kubeconfig \
+            --name "$(terraform output -raw eks_cluster_name)" \
+            --region us-east-1
+
+      - name: Instalar metrics-server (pré-requisito do HPA da aplicação)
+        run: |
+          kubectl apply -f addons/metrics-server.yaml
+          kubectl -n kube-system rollout status deployment/metrics-server --timeout=180s
+
+      - name: Exibir outputs do Terraform
+        run: |
+          echo "===== Todos os outputs ====="
+          terraform output
+          echo ""
+          echo "===== Copie estes valores para os secrets do repositório TechChallenger-Api ====="
+          echo "-> secret ECR_REPOSITORY_URL (output ecr_repository_url):"
+          terraform output -raw ecr_repository_url
+          echo ""
+          echo "-> secret EKS_CLUSTER_NAME (output eks_cluster_name):"
+          terraform output -raw eks_cluster_name
+          echo ""

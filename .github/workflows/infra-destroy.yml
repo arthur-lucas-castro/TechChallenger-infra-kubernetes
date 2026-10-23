@@ -1,0 +1,151 @@
+name: Terraform Destroy - VPC / EKS / ECR
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_destroy:
+        description: "Confirma a DESTRUIÇÃO de toda a infraestrutura AWS (irreversível)?"
+        required: true
+        type: choice
+        options:
+          - "no"
+          - "yes"
+        default: "no"
+      type_confirmation:
+        description: 'Digite exatamente "DESTROY" (maiúsculas) para confirmar'
+        required: true
+        type: string
+
+jobs:
+  plan-destroy:
+    name: Validar confirmações e gerar plano de destroy
+    runs-on: ubuntu-latest
+    environment: aws-deploy
+    permissions:
+      contents: read
+    steps:
+      - name: Verificar usuário autorizado
+        run: |
+          if [ "${{ github.actor }}" != "${{ vars.MEU_USUARIO_GITHUB }}" ]; then
+            echo "::error::Usuário '${{ github.actor }}' não autorizado a executar esta action (apenas '${{ vars.MEU_USUARIO_GITHUB }}' pode)."
+            exit 1
+          fi
+          echo "Usuário '${{ github.actor }}' autorizado a prosseguir."
+
+      - name: Verificar confirmação de destroy (confirm_destroy)
+        run: |
+          if [ "${{ github.event.inputs.confirm_destroy }}" != "yes" ]; then
+            echo "::error::Destroy não confirmado (confirm_destroy='${{ github.event.inputs.confirm_destroy }}'). Selecione 'yes' para prosseguir."
+            exit 1
+          fi
+          echo "confirm_destroy='yes' recebido."
+
+      - name: Verificar confirmação de destroy (type_confirmation)
+        run: |
+          if [ "${{ github.event.inputs.type_confirmation }}" != "DESTROY" ]; then
+            echo "::error::Palavra de confirmação incorreta (esperado 'DESTROY', recebido '${{ github.event.inputs.type_confirmation }}'). Job abortado."
+            exit 1
+          fi
+          echo "Palavra de confirmação validada. Gerando plano de destroy para revisão."
+
+      - name: Checkout do código
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.7.x"
+
+      # Credenciais temporárias do AWS Academy Learner Lab — ver aviso no topo do arquivo.
+      - name: Configurar credenciais AWS
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: us-east-1
+
+      - name: Garantir que o banco (infra-database) já foi destruído
+        run: |
+          count=$(aws s3 cp "s3://techchallenger-fase1-terraform-state-shared/infra-database/terraform.tfstate" - 2>/dev/null \
+            | jq '[.resources[]? | select(.mode == "managed")] | length' || echo 0)
+          if [ "${count:-0}" != "0" ]; then
+            echo "::error::O state do infra-database ainda tem $count recurso(s). Destrua o banco primeiro (workflow de destroy do TechChallenger-infra-database): o RDS usa as subnets desta VPC."
+            exit 1
+          fi
+          echo "infra-database sem recursos gerenciados, seguindo."
+
+      - name: Terraform Init
+        run: terraform init -input=false
+
+      - name: Terraform Plan (destroy)
+        run: terraform plan -destroy -input=false -out=tfplan-destroy
+
+      - name: Upload do plano de destroy como artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tfplan-destroy
+          path: tfplan-destroy
+          retention-days: 7
+
+      - name: Exibir resumo do que será destruído
+        run: |
+          echo "===== Recursos que serão DESTRUÍDOS (terraform plan -destroy) ====="
+          terraform show -no-color tfplan-destroy
+          echo "===================================================================="
+          echo ""
+          echo "Revise a lista acima. O job seguinte ('terraform-destroy') vai ficar"
+          echo "parado aguardando sua aprovação manual (Environment 'infra-destroy-approval')"
+          echo "antes de aplicar este plano."
+
+  terraform-destroy:
+    name: Aplicar destroy (após aprovação manual)
+    needs: plan-destroy
+    runs-on: ubuntu-latest
+    environment: aws-deploy
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Checkout do código
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.7.x"
+
+      - name: Configurar credenciais AWS
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: us-east-1
+
+      # Necessário para o provisioner "when = destroy" de
+      # null_resource.cleanup_k8s_load_balancers (eks.tf), que roda
+      # "kubectl delete service" para remover o Network Load Balancer criado
+      # pelo Kubernetes antes de apagar as subnets.
+      - name: Instalar kubectl
+        uses: azure/setup-kubectl@v4
+        with:
+          version: 'v1.30.0'
+
+      - name: Terraform Init
+        run: terraform init -input=false
+
+      - name: Download do plano de destroy
+        uses: actions/download-artifact@v4
+        with:
+          name: tfplan-destroy
+          path: .
+
+      - name: Terraform Destroy
+        run: terraform apply -input=false -auto-approve tfplan-destroy
+
+      - name: Confirmar conclusão da destruição
+        run: |
+          echo "Infraestrutura destruída com sucesso."
+          echo "Para provisionar novamente, dispare o workflow 'Terraform Apply - VPC / EKS / ECR' (infra-apply.yml)."
+          echo "Depois do apply, atualize ECR_REPOSITORY_URL e EKS_CLUSTER_NAME no repositório TechChallenger-Api."
