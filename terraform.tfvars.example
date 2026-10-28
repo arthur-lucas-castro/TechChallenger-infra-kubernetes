@@ -14,3 +14,10 @@ node_group_max_size     = 3
 node_group_desired_size = 2
 
 ecr_repository_name = "techchallenger-fase1"
+
+api_node_port                      = 30080
+api_listener_port                  = 80
+api_health_check_path              = "/health"
+api_gateway_throttling_rate_limit  = 50
+api_gateway_throttling_burst_limit = 100
+api_gateway_log_retention_days     = 7

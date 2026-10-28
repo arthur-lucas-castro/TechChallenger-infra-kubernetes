@@ -1,4 +1,4 @@
-name: Terraform Apply - VPC / EKS / ECR
+name: Terraform Apply - VPC / EKS / ECR / API Gateway
 
 on:
   workflow_dispatch:
@@ -91,10 +91,6 @@ jobs:
           echo "===== Todos os outputs ====="
           terraform output
           echo ""
-          echo "===== Copie estes valores para os secrets do repositório TechChallenger-Api ====="
-          echo "-> secret ECR_REPOSITORY_URL (output ecr_repository_url):"
-          terraform output -raw ecr_repository_url
-          echo ""
-          echo "-> secret EKS_CLUSTER_NAME (output eks_cluster_name):"
-          terraform output -raw eks_cluster_name
+          echo "===== Endpoint público da API (API Gateway) ====="
+          terraform output -raw api_gateway_endpoint
           echo ""

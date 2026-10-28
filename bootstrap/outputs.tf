@@ -1,11 +1,11 @@
 output "state_bucket_name" {
   description = "Nome do bucket S3 a ser usado no bloco backend \"s3\" (chave 'bucket')."
-  value       = aws_s3_bucket.terraform_state.id
+  value       = terraform_data.terraform_state_bucket.output
 }
 
 output "state_bucket_arn" {
   description = "ARN do bucket S3 criado para armazenar o state."
-  value       = aws_s3_bucket.terraform_state.arn
+  value       = "arn:aws:s3:::${terraform_data.terraform_state_bucket.output}"
 }
 
 output "lock_table_name" {

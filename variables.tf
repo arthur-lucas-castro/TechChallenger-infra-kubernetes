@@ -81,3 +81,44 @@ variable "node_group_desired_size" {
   type        = number
   default     = 2
 }
+
+variable "api_node_port" {
+  description = "NodePort fixo do Service da API no EKS (repositório TechChallenger-Api). O target group do NLB interno encaminha para essa porta nos nodes. Precisa estar na faixa 30000-32767 e ser igual ao nodePort declarado no service.yaml da aplicação."
+  type        = number
+  default     = 30080
+
+  validation {
+    condition     = var.api_node_port >= 30000 && var.api_node_port <= 32767
+    error_message = "api_node_port precisa estar na faixa de NodePort do Kubernetes (30000-32767)."
+  }
+}
+
+variable "api_listener_port" {
+  description = "Porta do listener do NLB interno da API, usada pela integração do API Gateway via VPC Link."
+  type        = number
+  default     = 80
+}
+
+variable "api_health_check_path" {
+  description = "Caminho HTTP do health check do target group do NLB (mesmo endpoint das probes do Deployment da API)."
+  type        = string
+  default     = "/health"
+}
+
+variable "api_gateway_throttling_rate_limit" {
+  description = "Limite de requisições por segundo (steady-state) aplicado a todas as rotas do API Gateway."
+  type        = number
+  default     = 50
+}
+
+variable "api_gateway_throttling_burst_limit" {
+  description = "Limite de burst de requisições aplicado a todas as rotas do API Gateway."
+  type        = number
+  default     = 100
+}
+
+variable "api_gateway_log_retention_days" {
+  description = "Retenção (dias) dos access logs do API Gateway no CloudWatch."
+  type        = number
+  default     = 7
+}

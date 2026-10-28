@@ -1,4 +1,4 @@
-name: Terraform Destroy - VPC / EKS / ECR
+name: Terraform Destroy - VPC / EKS / ECR / API Gateway
 
 on:
   workflow_dispatch:
@@ -67,7 +67,7 @@ jobs:
 
       - name: Garantir que o banco (infra-database) já foi destruído
         run: |
-          count=$(aws s3 cp "s3://techchallenger-fase1-terraform-state-shared/infra-database/terraform.tfstate" - 2>/dev/null \
+          count=$(aws s3 cp "s3://techchallenger-fase1-terraform-state-859733682813/infra-database/terraform.tfstate" - 2>/dev/null \
             | jq '[.resources[]? | select(.mode == "managed")] | length' || echo 0)
           if [ "${count:-0}" != "0" ]; then
             echo "::error::O state do infra-database ainda tem $count recurso(s). Destrua o banco primeiro (workflow de destroy do TechChallenger-infra-database): o RDS usa as subnets desta VPC."
@@ -147,5 +147,4 @@ jobs:
       - name: Confirmar conclusão da destruição
         run: |
           echo "Infraestrutura destruída com sucesso."
-          echo "Para provisionar novamente, dispare o workflow 'Terraform Apply - VPC / EKS / ECR' (infra-apply.yml)."
-          echo "Depois do apply, atualize ECR_REPOSITORY_URL e EKS_CLUSTER_NAME no repositório TechChallenger-Api."
+          echo "Para provisionar novamente, dispare o workflow 'Terraform Apply - VPC / EKS / ECR / API Gateway' (infra-apply.yml)."
