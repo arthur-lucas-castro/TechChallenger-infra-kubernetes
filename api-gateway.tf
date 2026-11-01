@@ -32,6 +32,22 @@ resource "aws_apigatewayv2_stage" "default" {
     throttling_burst_limit   = var.api_gateway_throttling_burst_limit
   }
 
+  # Limites menores contra enumeração de CPF e força bruta de senha. O limite é da
+  # rota inteira, somando todos os clientes, e não por IP.
+  dynamic "route_settings" {
+    for_each = local.auth_route_keys
+
+    content {
+      route_key                = route_settings.value
+      detailed_metrics_enabled = true
+      throttling_rate_limit    = var.auth_throttling_rate_limit
+      throttling_burst_limit   = var.auth_throttling_burst_limit
+    }
+  }
+
+  # Uma route_settings exige que a rota já exista.
+  depends_on = [aws_apigatewayv2_route.auth]
+
   access_log_settings {
     destination_arn = aws_cloudwatch_log_group.api_gateway.arn
     format = jsonencode({
@@ -106,9 +122,9 @@ resource "aws_apigatewayv2_integration" "eks" {
   }
 }
 
-# Sem authorizer por enquanto: o Lambda Authorizer e as rotas POST /auth* entram
-# junto com a infraestrutura das Lambdas (ADR-002). Até lá a proteção das rotas
-# é feita só pelo middleware JWT da API.
+# Sem authorizer por enquanto: o Lambda Authorizer entra quando o código dele existir
+# (ADR-002). Até lá a proteção das rotas é feita só pelo middleware JWT da API. As
+# rotas POST /auth* ficam em lambda.tf.
 resource "aws_apigatewayv2_route" "eks_proxy" {
   api_id    = aws_apigatewayv2_api.this.id
   route_key = "ANY /{proxy+}"

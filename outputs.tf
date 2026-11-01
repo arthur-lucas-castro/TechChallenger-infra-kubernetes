@@ -43,6 +43,16 @@ output "lab_role_arn" {
   value       = data.aws_iam_role.lab_role.arn
 }
 
+output "lambda_auth_function_name" {
+  description = "Nome da Lambda de autenticação, usado pelo deploy.yml do TechChallenger-severless."
+  value       = aws_lambda_function.auth.function_name
+}
+
+output "rds_client_security_group_id" {
+  description = "ID do SG da Lambda de autenticação. O infra-database precisa liberar a porta do RDS a partir dele (ADR-002)."
+  value       = aws_security_group.lambda_auth.id
+}
+
 output "api_gateway_id" {
   description = "ID do API Gateway (HTTP API)."
   value       = aws_apigatewayv2_api.this.id

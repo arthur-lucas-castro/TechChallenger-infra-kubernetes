@@ -1,6 +1,6 @@
 # TechChallenger-infra-kubernetes
 
-Infraestrutura de plataforma e borda da oficina mecânica na AWS, provisionada com **Terraform**: **VPC**, cluster **EKS**, node group, repositório **ECR**, componentes do cluster (**metrics-server**) e o **API Gateway** (HTTP API) que é a porta de entrada da aplicação.
+Infraestrutura de plataforma e borda da oficina mecânica na AWS, provisionada com **Terraform**: **VPC**, cluster **EKS**, node group, repositório **ECR**, componentes do cluster (**metrics-server**), a **Lambda de autenticação** e o **API Gateway** (HTTP API) que é a porta de entrada da aplicação.
 
 O projeto roda em uma conta **AWS Academy Learner Lab**. Isso impõe restrições que aparecem em várias decisões abaixo: não é possível criar IAM roles novas, as cotas de EC2/vCPU são baixas e as credenciais são temporárias.
 
@@ -8,7 +8,7 @@ O projeto roda em uma conta **AWS Academy Learner Lab**. Isso impõe restriçõe
 
 | Repositório | Responsabilidade |
 |---|---|
-| **TechChallenger-infra-kubernetes** (este) | VPC, EKS, node group, ECR, metrics-server, bucket do state, **API Gateway** e (em breve) infraestrutura das Lambdas |
+| **TechChallenger-infra-kubernetes** (este) | VPC, EKS, node group, ECR, metrics-server, bucket do state, **API Gateway** e infraestrutura da Lambda de autenticação |
 | [TechChallenger-infra-database](https://github.com/arthur-lucas-castro/TechChallenger-infra-database) | RDS PostgreSQL |
 | [TechChallenger-severless](https://github.com/arthur-lucas-castro/TechChallenger-severless) | Código das Lambdas de autenticação por CPF (o Terraform delas fica aqui, ver ADR-002) |
 | [TechChallenger-Api](https://github.com/arthur-lucas-castro/TechChallenger-Api) | API da oficina e manifestos Kubernetes da aplicação (Service `NodePort` atrás do gateway) |
@@ -22,7 +22,8 @@ O projeto roda em uma conta **AWS Academy Learner Lab**. Isso impõe restriçõe
                                    AWS (us-east-1)
   Cliente ──HTTPS──► API Gateway (HTTP API, stage $default)
                        │ throttling · access logs JSON · x-correlation-id
-                       │ (em breve: POST /auth* → Lambda · Lambda Authorizer)
+                       │ POST /auth* → Lambda de autenticação (subnets privadas)
+                       │ (em breve: Lambda Authorizer)
                        │ ANY /{proxy+}
 ┌──────────────────────┼───────────────────────────────────────────────────┐
 │  VPC (10.0.0.0/16)   ▼                                                     │
@@ -56,6 +57,7 @@ O projeto roda em uma conta **AWS Academy Learner Lab**. Isso impõe restriçõe
 | `ecr.tf` | Repositório da imagem da API |
 | `api-gateway.tf` | HTTP API, stage `$default`, access logs, VPC Link, integração e rotas |
 | `nlb.tf` | NLB interno da API, target group no NodePort, anexo ao ASG dos nodes, regra no SG dos nodes |
+| `lambda.tf` | Lambda de autenticação, SG, log group, integração, rotas `POST /auth*` e permissão de invocação |
 | `addons/metrics-server.yaml` | metrics-server v0.9.0 (pré-requisito do HPA da API) |
 | `outputs.tf` | Valores consumidos pelos outros repositórios |
 | `scripts/migrar-state-monorepo.sh` | Separação do state do antigo monorepo (uso único) |
@@ -69,6 +71,8 @@ O projeto roda em uma conta **AWS Academy Learner Lab**. Isso impõe restriçõe
 | `ecr_repository_url`, `eks_cluster_name` | Workflows do TechChallenger-Api, sem secrets: os nomes (`techchallenger-fase1`) ficam fixos no `env` dos workflows e a URL do ECR é descoberta com `aws ecr describe-repositories`. Mudar `cluster_name` ou `ecr_repository_name` aqui exige mudar lá também |
 | `api_node_port` | `nodePort` do Service em `k8s/aws/service.yaml` do TechChallenger-Api |
 | `api_gateway_endpoint` | URL pública da API (documentação, Postman, testes de ponta a ponta) |
+| `lambda_auth_function_name` | `LAMBDA_AUTH_FUNCTION_NAME` do `deploy.yml` do severless. O padrão `techchallenger-fase1-auth` já coincide |
+| `rds_client_security_group_id` | infra-database, para liberar a porta do RDS a partir do SG da Lambda |
 
 ## Como usar
 
@@ -158,8 +162,18 @@ Detalhes e alternativas em [ADR-003](docs/adr/ADR-003-integracao-api-gateway-eks
 - **Integração privada**: `ANY /{proxy+}` → VPC Link → **NLB interno** → NodePort `30080` nos nodes. O NLB é criado pelo Terraform (e não pelo Kubernetes) para que o ARN do listener exista no plan; o ASG do node group é anexado ao target group, então nodes criados pelo scaling entram sozinhos. Não há AWS Load Balancer Controller porque ele exige uma IAM role própria, indisponível no Learner Lab.
 - **Sem acesso público direto à API**: o Service da aplicação passa a ser `NodePort`; só o gateway alcança o cluster.
 - **Observabilidade**: access logs em JSON no CloudWatch (`/aws/apigateway/<cluster>-gateway`) com latência do gateway e da integração, e métricas detalhadas por rota. O header `x-correlation-id` enviado à API é o `requestId` do gateway, o mesmo dos access logs.
-- **Throttling** global por stage (`api_gateway_throttling_rate_limit` / `_burst_limit`). Quando as rotas `/auth*` existirem, elas recebem limites próprios mais baixos contra enumeração de CPF.
-- **Autenticação (próximo passo)**: as rotas `POST /auth`, `/auth/refresh` e `/auth/logout` e o Lambda Authorizer em `/{proxy+}` serão adicionados aqui junto com as Lambdas (ADR-002). Até lá, as rotas protegidas dependem só do middleware JWT da API.
+- **Throttling** global por stage (`api_gateway_throttling_rate_limit` / `_burst_limit`). As rotas `POST /auth*` têm limites próprios mais baixos (`auth_throttling_rate_limit` / `_burst_limit`) contra enumeração de CPF e força bruta de senha. O limite soma todos os clientes da rota, então um ataque também pode bloquear logins legítimos.
+- **Autenticação (próximo passo)**: o Lambda Authorizer em `/{proxy+}` será adicionado quando o código dele existir no severless (ADR-002). Até lá, as rotas protegidas dependem só do middleware JWT da API.
+
+### Lambda de autenticação (`lambda.tf`)
+
+- **Só infraestrutura**: runtime, memória, rede, variáveis e rotas ficam aqui. O código é publicado pelo `deploy.yml` do severless, e `ignore_changes` impede o Terraform de sobrescrevê-lo. O primeiro `apply` cria a função com um placeholder que responde `503`.
+- **Rede**: roda nas subnets privadas e sai pelo NAT Gateway para ler o SSM. O SG libera só a porta do banco dentro da VPC e HTTPS para fora.
+- **Acesso ao RDS**: o SG da função precisa estar liberado no SG do RDS, regra que pertence ao infra-database. Sem ela, a função responde `503`.
+- **Segredos**: a função recebe só os nomes dos parâmetros SSM. Os valores são publicados pelo workflow `ssm-parameters.yml` do infra-database, então não passam pelo tfstate.
+- **`LabRole`**: precisa de `ssm:GetParameters`. No Learner Lab não é possível criar uma role própria.
+- **Runtime**: `nodejs20.x`, depreciado pela AWS desde 30/04/2026 e sem novos patches de segurança. A AWS bloqueia a criação de funções nele em 29/07/2027 e a atualização em 31/08/2027.
+- **Destroy**: o SG pode levar dezenas de minutos para ser apagado, enquanto a AWS libera as ENIs da Lambda.
 
 ### metrics-server (`addons/`)
 
