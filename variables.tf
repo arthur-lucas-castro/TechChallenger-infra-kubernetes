@@ -122,3 +122,74 @@ variable "api_gateway_log_retention_days" {
   type        = number
   default     = 7
 }
+
+variable "auth_throttling_rate_limit" {
+  description = "Limite de requisições por segundo de cada rota POST /auth*, somando todos os clientes."
+  type        = number
+  default     = 5
+}
+
+variable "auth_throttling_burst_limit" {
+  description = "Limite de burst de cada rota POST /auth*."
+  type        = number
+  default     = 10
+}
+
+variable "lambda_runtime" {
+  description = "Runtime da Lambda de autenticação. O nodejs20.x está depreciado desde abril de 2026, sem novos patches de segurança; a AWS bloqueia a criação de funções nele em 29/07/2027. Antes de trocar, altere o target do esbuild no TechChallenger-severless."
+  type        = string
+  default     = "nodejs20.x"
+}
+
+variable "lambda_architecture" {
+  description = "Arquitetura da Lambda de autenticação. O pacote não tem módulos nativos, então funciona em x86_64 e arm64."
+  type        = string
+  default     = "x86_64"
+
+  validation {
+    condition     = contains(["x86_64", "arm64"], var.lambda_architecture)
+    error_message = "lambda_architecture precisa ser x86_64 ou arm64."
+  }
+}
+
+variable "lambda_memory_size" {
+  description = "Memória (MB) da Lambda de autenticação. A CPU cresce com a memória, e o bcrypt do POST /auth/login depende dela."
+  type        = number
+  default     = 512
+}
+
+variable "lambda_timeout" {
+  description = "Timeout (s) da Lambda de autenticação. Precisa ser menor que os 30 s de integração do API Gateway."
+  type        = number
+  default     = 10
+}
+
+variable "lambda_reserved_concurrency" {
+  description = "Concorrência reservada da Lambda de autenticação, que limita as conexões abertas no RDS. -1 não reserva: contas com limite baixo, como a do Learner Lab, podem recusar qualquer reserva."
+  type        = number
+  default     = -1
+}
+
+variable "lambda_log_retention_days" {
+  description = "Retenção (dias) dos logs da Lambda de autenticação no CloudWatch."
+  type        = number
+  default     = 7
+}
+
+variable "db_port" {
+  description = "Porta do RDS PostgreSQL. Precisa ser igual à variável db_port do TechChallenger-infra-database."
+  type        = number
+  default     = 5432
+}
+
+variable "ssm_jwt_secret_param" {
+  description = "Nome do parâmetro SSM com o segredo do JWT, publicado pelo workflow ssm-parameters.yml do TechChallenger-infra-database."
+  type        = string
+  default     = "/techchallenger/jwt/secret"
+}
+
+variable "ssm_db_param_prefix" {
+  description = "Prefixo dos parâmetros SSM de conexão com o banco, publicados pelo workflow ssm-parameters.yml do TechChallenger-infra-database."
+  type        = string
+  default     = "/techchallenger/db"
+}
