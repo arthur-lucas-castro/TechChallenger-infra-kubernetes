@@ -183,13 +183,13 @@ variable "db_port" {
 }
 
 variable "ssm_jwt_secret_param" {
-  description = "Nome do parâmetro SSM com o segredo do JWT, publicado pelo workflow ssm-parameters.yml do TechChallenger-infra-database."
+  description = "Nome do parâmetro SSM com o segredo do JWT, publicado pelo workflow ssm-parameters.yml deste repositório."
   type        = string
   default     = "/techchallenger/jwt/secret"
 }
 
 variable "ssm_db_param_prefix" {
-  description = "Prefixo dos parâmetros SSM de conexão com o banco, publicados pelo workflow ssm-parameters.yml do TechChallenger-infra-database."
+  description = "Prefixo dos parâmetros SSM de conexão com o banco, publicados pelo workflow ssm-parameters.yml deste repositório."
   type        = string
   default     = "/techchallenger/db"
 }

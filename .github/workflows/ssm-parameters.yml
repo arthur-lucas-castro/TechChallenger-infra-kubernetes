@@ -1,0 +1,138 @@
+name: Publicar parametros no SSM
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_publish:
+        description: "Confirma a publicação no SSM (sobrescreve os valores informados)?"
+        required: true
+        type: choice
+        options:
+          - "no"
+          - "yes"
+        default: "no"
+      db_host:
+        description: "Host do RDS, sem a porta (output rds_address do infra-database). Em branco mantém o valor atual."
+        required: false
+        type: string
+      db_name:
+        description: "Nome do banco. Em branco mantém o valor atual."
+        required: false
+        type: string
+      db_username:
+        description: "Usuário do banco. Em branco mantém o valor atual."
+        required: false
+        type: string
+      db_password:
+        description: "Senha do banco. Em branco mantém o valor atual."
+        required: false
+        type: string
+      jwt_secret:
+        description: "Segredo do JWT, lido pela API e pelas Lambdas (mínimo de 32 bytes). Em branco mantém o valor atual."
+        required: false
+        type: string
+      email_host:
+        description: "Servidor SMTP da API (ex.: smtp.gmail.com). Em branco mantém o valor atual."
+        required: false
+        type: string
+      email_username:
+        description: "Usuário SMTP da API. Em branco mantém o valor atual."
+        required: false
+        type: string
+      email_password:
+        description: "Senha SMTP da API. Em branco mantém o valor atual."
+        required: false
+        type: string
+
+# Nomes lidos pela Lambda de autenticação e pelas pipelines do TechChallenger-severless
+# (ADR-002) e do TechChallenger-Api: DB_PARAM_PREFIX, JWT_SECRET_PARAM e EMAIL_PARAM_PREFIX.
+env:
+  DB_PARAM_PREFIX: /techchallenger/db
+  JWT_SECRET_PARAM: /techchallenger/jwt/secret
+  EMAIL_PARAM_PREFIX: /techchallenger/email
+
+concurrency:
+  group: ssm-parameters
+  cancel-in-progress: false
+
+jobs:
+  publish-parameters:
+    name: Publicar parâmetros no SSM
+    if: github.event.inputs.confirm_publish == 'yes'
+    runs-on: ubuntu-latest
+    environment: aws-deploy
+    permissions:
+      contents: read
+    steps:
+      # Precisa ser o primeiro passo. Os inputs são lidos do arquivo do evento porque
+      # ${{ inputs.x }} e env: gravariam os valores no log do passo.
+      - name: Mascarar valores sensíveis no log
+        run: |
+          for field in db_password jwt_secret email_password; do
+            value=$(jq -r --arg field "$field" '.inputs[$field] // ""' "$GITHUB_EVENT_PATH")
+            if [ -n "$value" ]; then
+              echo "::add-mask::$value"
+            fi
+          done
+
+      # Falha antes de gravar qualquer valor, para não deixar os parâmetros pela metade.
+      - name: Validar valores informados
+        run: |
+          input() { jq -r --arg field "$1" '.inputs[$field] // ""' "$GITHUB_EVENT_PATH"; }
+
+          host=$(input db_host)
+          jwt_secret=$(input jwt_secret)
+          if [ -z "$host$(input db_name)$(input db_username)$(input db_password)$jwt_secret$(input email_host)$(input email_username)$(input email_password)" ]; then
+            echo "::error::Informe ao menos um valor."
+            exit 1
+          fi
+          case "$host" in
+            *:*)
+              echo "::error::db_host deve ser informado sem a porta (output rds_address, não rds_endpoint)."
+              exit 1
+              ;;
+          esac
+          # A Lambda e o .NET recusam chaves HS256 com menos de 32 bytes.
+          if [ -n "$jwt_secret" ] && [ "$(printf '%s' "$jwt_secret" | wc -c)" -lt 32 ]; then
+            echo "::error::jwt_secret precisa ter no mínimo 32 bytes."
+            exit 1
+          fi
+
+      # Credenciais temporárias do AWS Academy Learner Lab (expiram periodicamente e precisam ser renovadas nos secrets do repositório).
+      - name: Configurar credenciais AWS
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: us-east-1
+
+      - name: Publicar parâmetros informados
+        run: |
+          input() { jq -r --arg field "$1" '.inputs[$field] // ""' "$GITHUB_EVENT_PATH"; }
+
+          put() {
+            value=$(input "$3")
+            if [ -z "$value" ]; then
+              echo "$1: mantido"
+              return
+            fi
+            aws ssm put-parameter --overwrite --name "$1" --type "$2" --value="$value" \
+              --query 'Version' --output text > /dev/null
+            echo "$1: atualizado ($2)"
+          }
+
+          put "$DB_PARAM_PREFIX/host" String db_host
+          put "$DB_PARAM_PREFIX/name" String db_name
+          put "$DB_PARAM_PREFIX/username" String db_username
+          put "$DB_PARAM_PREFIX/password" SecureString db_password
+          put "$JWT_SECRET_PARAM" SecureString jwt_secret
+          put "$EMAIL_PARAM_PREFIX/host" String email_host
+          put "$EMAIL_PARAM_PREFIX/username" String email_username
+          put "$EMAIL_PARAM_PREFIX/password" SecureString email_password
+
+      - name: Conferir parâmetros publicados (só nomes e tipos)
+        run: |
+          aws ssm describe-parameters \
+            --parameter-filters "Key=Name,Option=BeginsWith,Values=/techchallenger/" \
+            --query 'Parameters[].[Name,Type,Version]' --output table
