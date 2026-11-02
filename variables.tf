@@ -193,3 +193,33 @@ variable "ssm_db_param_prefix" {
   type        = string
   default     = "/techchallenger/db"
 }
+
+variable "lambda_datadog_enabled" {
+  description = "Anexa à Lambda de autenticação os layers do Datadog (extensão + biblioteca Node). Exige a API key publicada em ssm_datadog_api_key_param antes do apply."
+  type        = bool
+  default     = true
+}
+
+variable "datadog_site" {
+  description = "Site da conta Datadog (ex.: datadoghq.com, us5.datadoghq.com). Precisa ser o mesmo informado no workflow datadog.yml."
+  type        = string
+  default     = "datadoghq.com"
+}
+
+variable "ssm_datadog_api_key_param" {
+  description = "Nome do parâmetro SSM com a API key do Datadog, publicado pelo workflow ssm-parameters.yml deste repositório. A extensão lê o valor em tempo de execução, então a key não passa pelo tfstate."
+  type        = string
+  default     = "/techchallenger/datadog/api-key"
+}
+
+variable "datadog_extension_layer_version" {
+  description = "Versão do layer Datadog-Extension (release vNN de DataDog/datadog-lambda-extension)."
+  type        = number
+  default     = 101
+}
+
+variable "datadog_node_layer_version" {
+  description = "Versão do layer Datadog-NodeXX-x, igual ao minor da release v12.NN.0 de DataDog/datadog-lambda-js."
+  type        = number
+  default     = 143
+}

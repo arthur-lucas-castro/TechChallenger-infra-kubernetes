@@ -106,7 +106,7 @@ Primeiro destrua o **infra-database**. Depois rode o workflow **Terraform Destro
 | Workflow | Gatilho | O que faz |
 |---|---|---|
 | `terraform-ci.yml` | Pull request | `fmt -check` + `validate` (sem credenciais) |
-| `infra-apply.yml` | Manual | `plan` → `apply` → metrics-server |
+| `infra-apply.yml` | Manual, com o tipo de instância dos nodes e o site do Datadog | `plan` → `apply` → metrics-server |
 | `infra-destroy.yml` | Manual | trava do banco → `plan -destroy` → aprovação → `destroy` |
 | `ssm-parameters.yml` | Manual, com os valores informados no disparo | Publica `/techchallenger/db/*`, `/techchallenger/jwt/secret`, `/techchallenger/email/*` e `/techchallenger/datadog/api-key` no SSM |
 | `datadog.yml` | Manual, com o site da conta Datadog | Instala, atualiza ou remove o agente Datadog no cluster (Helm) |
@@ -181,6 +181,7 @@ Detalhes e alternativas em [ADR-003](docs/adr/ADR-003-integracao-api-gateway-eks
 - **`LabRole`**: precisa de `ssm:GetParameters`. No Learner Lab não é possível criar uma role própria.
 - **Runtime**: `nodejs20.x`, depreciado pela AWS desde 30/04/2026 e sem novos patches de segurança. A AWS bloqueia a criação de funções nele em 29/07/2027 e a atualização em 31/08/2027.
 - **Destroy**: o SG pode levar dezenas de minutos para ser apagado, enquanto a AWS libera as ENIs da Lambda.
+- **Datadog** ([ADR-004](docs/adr/ADR-004-observabilidade-datadog.md)): com `lambda_datadog_enabled = true` (padrão), a função recebe os layers `Datadog-Extension` (`datadog_extension_layer_version`) e `Datadog-Node20-x` (`datadog_node_layer_version`), publicados pela conta da Datadog. O handler passa a ser o wrapper `/opt/nodejs/node_modules/datadog-lambda-js/handler.handler`, que inicia o tracer e chama o `index.handler` indicado em `DD_LAMBDA_HANDLER`. A extensão lê a API key do SSM pelo ARN em `DD_API_KEY_SSM_ARN` e envia logs, traces e métricas direto ao Datadog, pela mesma saída HTTPS usada para o SSM. `DD_CAPTURE_LAMBDA_PAYLOAD=false` mantém CPF, senha e tokens fora dos traces. O site (`datadog_site`) vem do input do `infra-apply.yml` e precisa ser o mesmo do `datadog.yml`. Publique a key no SSM antes deste apply: sem ela a extensão não tem como enviar nada. Para tirar os layers (fim do trial, por exemplo), aplique com `lambda_datadog_enabled = false`.
 
 ### metrics-server (`addons/`)
 
@@ -203,7 +204,7 @@ Ordem de uso:
 
 A key nunca entra no tfstate nem no repositório: o workflow lê do SSM e cria o Secret `datadog-secret` no namespace `datadog`. Para encerrar a coleta, por exemplo no fim do trial, rode com `action=uninstall`. O `infra-destroy.yml` não precisa desse passo, porque o agente some junto com o cluster.
 
-Sem IAM role própria no Learner Lab, a integração AWS nativa do Datadog (leitura do CloudWatch) não é usada. Métricas do API Gateway e da Lambda ficam a cargo da extensão Datadog na Lambda e do APM da API.
+Sem IAM role própria no Learner Lab, a integração AWS nativa do Datadog (leitura do CloudWatch) não é usada. A Lambda é coberta pela extensão Datadog (seção anterior), e a latência das APIs vem do APM da API. Os access logs do API Gateway continuam só no CloudWatch. Detalhes e alternativas em [ADR-004](docs/adr/ADR-004-observabilidade-datadog.md).
 
 ### Variáveis
 
