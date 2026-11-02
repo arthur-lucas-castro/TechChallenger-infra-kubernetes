@@ -1,0 +1,153 @@
+name: Configurar Datadog no EKS
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Confirma a alteração do agente Datadog no cluster EKS?"
+        required: true
+        type: choice
+        options:
+          - "no"
+          - "yes"
+        default: "no"
+      action:
+        description: "install: instala ou atualiza o agente. uninstall: remove o agente (ex.: fim do trial)."
+        required: true
+        type: choice
+        options:
+          - "install"
+          - "uninstall"
+        default: "install"
+      datadog_site:
+        description: "Site da conta Datadog (aparece na URL do app, ex.: us5.datadoghq.com)."
+        required: true
+        type: choice
+        options:
+          - "datadoghq.com"
+          - "us3.datadoghq.com"
+          - "us5.datadoghq.com"
+          - "datadoghq.eu"
+          - "ap1.datadoghq.com"
+        default: "datadoghq.com"
+
+# EKS_CLUSTER_NAME: variável cluster_name deste repositório.
+# DATADOG_API_KEY_PARAM: publicado pelo workflow ssm-parameters.yml deste repositório.
+env:
+  EKS_CLUSTER_NAME: techchallenger-fase1
+  DATADOG_API_KEY_PARAM: /techchallenger/datadog/api-key
+  DATADOG_NAMESPACE: datadog
+  DATADOG_RELEASE: datadog
+  DATADOG_CHART_VERSION: "3.257.1"
+
+concurrency:
+  group: datadog-agent
+  cancel-in-progress: false
+
+jobs:
+  datadog:
+    name: ${{ github.event.inputs.action }} do agente Datadog
+    if: github.event.inputs.confirm == 'yes'
+    runs-on: ubuntu-latest
+    environment: aws-deploy
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout do código
+        uses: actions/checkout@v4
+
+      # Credenciais temporárias do AWS Academy Learner Lab (expiram periodicamente e precisam ser renovadas nos secrets do repositório).
+      - name: Configurar credenciais AWS
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: us-east-1
+
+      - name: Instalar kubectl
+        uses: azure/setup-kubectl@v4
+        with:
+          version: 'v1.30.0'
+
+      - name: Instalar Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: 'v3.15.4'
+
+      - name: Configurar kubeconfig do cluster EKS
+        run: |
+          aws eks update-kubeconfig \
+            --name "$EKS_CLUSTER_NAME" \
+            --region us-east-1
+
+      - name: Remover agente Datadog
+        if: github.event.inputs.action == 'uninstall'
+        run: |
+          helm uninstall "$DATADOG_RELEASE" --namespace "$DATADOG_NAMESPACE" --wait --ignore-not-found
+          kubectl delete namespace "$DATADOG_NAMESPACE" --ignore-not-found=true
+
+      # Com t3.micro cada node aceita só 4 pods (limite de IPs do VPC CNI), e o
+      # DaemonSet do agente não teria onde rodar. Aplicar o infra-apply com t3.small.
+      - name: Verificar capacidade de pods dos nodes
+        if: github.event.inputs.action == 'install'
+        run: |
+          kubectl get nodes -o custom-columns='NODE:.metadata.name,TIPO:.metadata.labels.node\.kubernetes\.io/instance-type,PODS:.status.allocatable.pods'
+          min_pods=$(kubectl get nodes -o jsonpath='{.items[*].status.allocatable.pods}' | tr ' ' '\n' | sort -n | head -1)
+          if [ -z "$min_pods" ] || [ "$min_pods" -le 4 ]; then
+            echo "::error::Há node com capacidade para só ${min_pods:-0} pods. Rode o infra-apply com node_instance_type=t3.small antes de instalar o Datadog."
+            exit 1
+          fi
+
+      - name: Ler e validar a API key do Datadog
+        if: github.event.inputs.action == 'install'
+        env:
+          DATADOG_SITE: ${{ github.event.inputs.datadog_site }}
+        run: |
+          if ! api_key=$(aws ssm get-parameter --name "$DATADOG_API_KEY_PARAM" --with-decryption \
+              --query 'Parameter.Value' --output text 2>/dev/null); then
+            echo "::error::Parâmetro $DATADOG_API_KEY_PARAM não encontrado. Publique-o pelo workflow ssm-parameters.yml."
+            exit 1
+          fi
+          echo "::add-mask::$api_key"
+
+          # Falha aqui, e não com o agente em CrashLoop, se a key ou o site estiverem errados.
+          status=$(curl -s -o /dev/null -w '%{http_code}' \
+            -H "DD-API-KEY: $api_key" "https://api.$DATADOG_SITE/api/v1/validate")
+          if [ "$status" != "200" ]; then
+            echo "::error::API key recusada por https://api.$DATADOG_SITE (HTTP $status). Confira a key e o site da conta."
+            exit 1
+          fi
+          echo "API key válida para $DATADOG_SITE."
+
+          kubectl create namespace "$DATADOG_NAMESPACE" --dry-run=client -o yaml | kubectl apply -f -
+          kubectl create secret generic datadog-secret \
+            --namespace "$DATADOG_NAMESPACE" \
+            --from-literal=api-key="$api_key" \
+            --dry-run=client -o yaml | kubectl apply -f - > /dev/null
+
+      - name: Instalar ou atualizar o chart do Datadog
+        if: github.event.inputs.action == 'install'
+        env:
+          DATADOG_SITE: ${{ github.event.inputs.datadog_site }}
+        run: |
+          helm repo add datadog https://helm.datadoghq.com
+          helm repo update datadog
+          helm upgrade --install "$DATADOG_RELEASE" datadog/datadog \
+            --namespace "$DATADOG_NAMESPACE" \
+            --version "$DATADOG_CHART_VERSION" \
+            --values addons/datadog-values.yaml \
+            --set datadog.site="$DATADOG_SITE" \
+            --wait --timeout 10m
+
+      - name: Conferir agentes em execução
+        if: github.event.inputs.action == 'install'
+        run: |
+          kubectl -n "$DATADOG_NAMESPACE" rollout status daemonset/"$DATADOG_RELEASE" --timeout=180s
+          kubectl -n "$DATADOG_NAMESPACE" rollout status deployment/"$DATADOG_RELEASE"-cluster-agent --timeout=180s
+          kubectl -n "$DATADOG_NAMESPACE" get pods -o wide
+
+          pod=$(kubectl -n "$DATADOG_NAMESPACE" get pods -l app="$DATADOG_RELEASE" -o jsonpath='{.items[0].metadata.name}')
+          echo "===== agent status ($pod) ====="
+          kubectl -n "$DATADOG_NAMESPACE" exec "$pod" -c agent -- agent status \
+            | sed -n '/API Keys status/,/^$/p;/Logs Agent/,/^$/p;/APM Agent/,/^$/p' || true

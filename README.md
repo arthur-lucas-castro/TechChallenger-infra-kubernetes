@@ -59,6 +59,7 @@ O projeto roda em uma conta **AWS Academy Learner Lab**. Isso impõe restriçõe
 | `nlb.tf` | NLB interno da API, target group no NodePort, anexo ao ASG dos nodes, regra no SG dos nodes |
 | `lambda.tf` | Lambda de autenticação, SG, log group, integração, rotas `POST /auth*` e permissão de invocação |
 | `addons/metrics-server.yaml` | metrics-server v0.9.0 (pré-requisito do HPA da API) |
+| `addons/datadog-values.yaml` | Values do chart Helm do agente Datadog, aplicado pelo `datadog.yml` |
 | `outputs.tf` | Valores consumidos pelos outros repositórios |
 | `scripts/migrar-state-monorepo.sh` | Separação do state do antigo monorepo (uso único) |
 | `docs/adr/` | Decisões de arquitetura |
@@ -107,7 +108,8 @@ Primeiro destrua o **infra-database**. Depois rode o workflow **Terraform Destro
 | `terraform-ci.yml` | Pull request | `fmt -check` + `validate` (sem credenciais) |
 | `infra-apply.yml` | Manual | `plan` → `apply` → metrics-server |
 | `infra-destroy.yml` | Manual | trava do banco → `plan -destroy` → aprovação → `destroy` |
-| `ssm-parameters.yml` | Manual, com os valores informados no disparo | Publica `/techchallenger/db/*`, `/techchallenger/jwt/secret` e `/techchallenger/email/*` no SSM |
+| `ssm-parameters.yml` | Manual, com os valores informados no disparo | Publica `/techchallenger/db/*`, `/techchallenger/jwt/secret`, `/techchallenger/email/*` e `/techchallenger/datadog/api-key` no SSM |
+| `datadog.yml` | Manual, com o site da conta Datadog | Instala, atualiza ou remove o agente Datadog no cluster (Helm) |
 
 Secrets do environment `aws-deploy`: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`. Variable: `MEU_USUARIO_GITHUB`.
 
@@ -183,6 +185,25 @@ Detalhes e alternativas em [ADR-003](docs/adr/ADR-003-integracao-api-gateway-eks
 ### metrics-server (`addons/`)
 
 É pré-requisito do HPA da API e não vem instalado no EKS. O manifesto oficial é vendorizado na `v0.9.0` (em vez de `latest`) para manter a reprodutibilidade, e o workflow de apply o instala logo após o `terraform apply`. Ele saiu do pipeline da aplicação por ser um componente do cluster ([ADR-001](docs/adr/ADR-001-localizacao-manifestos-kubernetes.md)).
+
+### Datadog (`addons/datadog-values.yaml`, `datadog.yml`)
+
+Agente de monitoramento do cluster, instalado pelo chart Helm `datadog/datadog` com versão fixa (`DATADOG_CHART_VERSION` no workflow). Como o metrics-server, é componente do cluster, então fica neste repositório ([ADR-001](docs/adr/ADR-001-localizacao-manifestos-kubernetes.md)). Coleta:
+
+- **CPU, memória e estado** de nodes, pods, deployments e HPA (kubelet + kube-state-metrics);
+- **logs** de todos os containers, menos `kube-system` e `datadog`;
+- **traces (APM)** pelo hostPort 8126. O Cluster Agent injeta o tracer .NET só nos pods com o label `admission.datadoghq.com/enabled: "true"`, que fica no `deployment.yaml` do TechChallenger-Api;
+- **métricas customizadas (DogStatsD)** pelo hostPort UDP 8125.
+
+Ordem de uso:
+
+1. Rode o `infra-apply.yml` com `node_instance_type=t3.small`. No `t3.micro` cada node aceita só 4 pods, e o agente não tem onde rodar. O workflow do Datadog confere isso e falha antes de instalar.
+2. Publique a API key em `/techchallenger/datadog/api-key` pelo `ssm-parameters.yml` (campo `datadog_api_key`).
+3. Rode o `datadog.yml` com `action=install` e o site da conta. O site aparece na URL do app, ex.: `us5.datadoghq.com`. O workflow valida a key nesse site antes de instalar.
+
+A key nunca entra no tfstate nem no repositório: o workflow lê do SSM e cria o Secret `datadog-secret` no namespace `datadog`. Para encerrar a coleta, por exemplo no fim do trial, rode com `action=uninstall`. O `infra-destroy.yml` não precisa desse passo, porque o agente some junto com o cluster.
+
+Sem IAM role própria no Learner Lab, a integração AWS nativa do Datadog (leitura do CloudWatch) não é usada. Métricas do API Gateway e da Lambda ficam a cargo da extensão Datadog na Lambda e do APM da API.
 
 ### Variáveis
 
