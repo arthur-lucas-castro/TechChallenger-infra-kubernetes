@@ -107,8 +107,13 @@ Primeiro destrua o **infra-database**. Depois rode o workflow **Terraform Destro
 | `terraform-ci.yml` | Pull request | `fmt -check` + `validate` (sem credenciais) |
 | `infra-apply.yml` | Manual | `plan` → `apply` → metrics-server |
 | `infra-destroy.yml` | Manual | trava do banco → `plan -destroy` → aprovação → `destroy` |
+| `ssm-parameters.yml` | Manual, com os valores informados no disparo | Publica `/techchallenger/db/*`, `/techchallenger/jwt/secret` e `/techchallenger/email/*` no SSM |
 
 Secrets do environment `aws-deploy`: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`. Variable: `MEU_USUARIO_GITHUB`.
+
+No `ssm-parameters.yml`, campo em branco mantém o valor atual, então dá para trocar um parâmetro só. O `db_host` é o output `rds_address` do infra-database, sem a porta, e o `jwt_secret` precisa ter no mínimo 32 bytes. A API lê todos esses parâmetros no deploy, e os `email_*` são obrigatórios para ele passar. Rode esse workflow depois do `infra-apply.yml` do infra-database e, depois de recriar o RDS, informe o host de novo, porque ele pode mudar. Se a senha do banco mudar no secret `DB_PASSWORD` do infra-database, publique a nova aqui também. Valores já carregados pela Lambda ficam em cache até um novo cold start, e a API só os recebe no próximo deploy.
+
+Os inputs de `workflow_dispatch` não têm a proteção de um secret: a pipeline mascara as senhas e o segredo do JWT no log, mas o GitHub guarda os inputs no evento da execução. Quem tiver acesso ao repositório com permissão de disparar workflows também pode gravar nesses parâmetros.
 
 ## Migração do state do monorepo
 
@@ -170,7 +175,7 @@ Detalhes e alternativas em [ADR-003](docs/adr/ADR-003-integracao-api-gateway-eks
 - **Só infraestrutura**: runtime, memória, rede, variáveis e rotas ficam aqui. O código é publicado pelo `deploy.yml` do severless, e `ignore_changes` impede o Terraform de sobrescrevê-lo. O primeiro `apply` cria a função com um placeholder que responde `503`.
 - **Rede**: roda nas subnets privadas e sai pelo NAT Gateway para ler o SSM. O SG libera só a porta do banco dentro da VPC e HTTPS para fora.
 - **Acesso ao RDS**: o SG da função precisa estar liberado no SG do RDS, regra que pertence ao infra-database. Sem ela, a função responde `503`.
-- **Segredos**: a função recebe só os nomes dos parâmetros SSM. Os valores são publicados pelo workflow `ssm-parameters.yml` do infra-database, então não passam pelo tfstate.
+- **Segredos**: a função recebe só os nomes dos parâmetros SSM. Os valores são publicados pelo workflow `ssm-parameters.yml` deste repositório, então não passam pelo tfstate.
 - **`LabRole`**: precisa de `ssm:GetParameters`. No Learner Lab não é possível criar uma role própria.
 - **Runtime**: `nodejs20.x`, depreciado pela AWS desde 30/04/2026 e sem novos patches de segurança. A AWS bloqueia a criação de funções nele em 29/07/2027 e a atualização em 31/08/2027.
 - **Destroy**: o SG pode levar dezenas de minutos para ser apagado, enquanto a AWS libera as ENIs da Lambda.
