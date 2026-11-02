@@ -1,0 +1,78 @@
+# Values do chart datadog/datadog, aplicado pelo workflow datadog.yml.
+# O site e a versão do chart vêm do workflow; a API key vem do Secret datadog-secret,
+# criado pelo workflow a partir do SSM (/techchallenger/datadog/api-key).
+
+datadog:
+  apiKeyExistingSecret: datadog-secret
+  clusterName: techchallenger-fase1
+  tags:
+    - "project:techchallenger"
+    - "env:prod"
+
+  # O certificado do kubelet no EKS não é assinado pela CA do cluster.
+  kubelet:
+    tlsVerify: false
+
+  # Logs de todos os containers, menos os de sistema e os do próprio agente.
+  logs:
+    enabled: true
+    containerCollectAll: true
+  containerExcludeLogs: "kube_namespace:kube-system kube_namespace:datadog"
+
+  # Traces da API: o tracer injetado pelo admission controller envia para o hostPort 8126.
+  apm:
+    portEnabled: true
+
+  # Métricas customizadas das ordens de serviço (DogStatsD, UDP 8125 no host).
+  dogstatsd:
+    useHostPort: true
+    nonLocalTraffic: true
+
+  # CPU, memória, réplicas do HPA e estado dos pods/deployments.
+  kubeStateMetricsCore:
+    enabled: true
+  orchestratorExplorer:
+    enabled: true
+
+  # Lista de processos não é exigida e consome memória do node.
+  processAgent:
+    processCollection: false
+
+clusterAgent:
+  enabled: true
+  replicas: 1
+  # Injeta o tracer .NET só nos pods com o label admission.datadoghq.com/enabled=true.
+  admissionController:
+    enabled: true
+    mutateUnlabelled: false
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      memory: 256Mi
+
+# Requests baixos para caber no node t3.small junto com a API.
+agents:
+  containers:
+    agent:
+      resources:
+        requests:
+          cpu: 100m
+          memory: 200Mi
+        limits:
+          memory: 400Mi
+    traceAgent:
+      resources:
+        requests:
+          cpu: 20m
+          memory: 64Mi
+        limits:
+          memory: 128Mi
+    processAgent:
+      resources:
+        requests:
+          cpu: 20m
+          memory: 64Mi
+        limits:
+          memory: 128Mi
