@@ -16,6 +16,17 @@ O projeto roda em uma conta **AWS Academy Learner Lab**. Isso impõe restriçõe
 **Ordem de provisionamento:** **1. infra-kubernetes** → 2. infra-database → 3. severless / Api.
 **Ordem de destruição:** a inversa. O workflow de destroy deste repo bloqueia a execução enquanto o state do infra-database ainda tiver recursos.
 
+## Documentação e links
+
+| O quê | Onde |
+|---|---|
+| Documentação da arquitetura (diagrama de componentes, sequência, RFCs, ADRs, modelo relacional) | [Índice no TechChallenger-Api](https://github.com/arthur-lucas-castro/TechChallenger-Api/blob/main/docs/arquitetura/README.md) |
+| Decisões deste repositório | [ADR-001](docs/adr/ADR-001-localizacao-manifestos-kubernetes.md) (manifestos), [ADR-003](docs/adr/ADR-003-integracao-api-gateway-eks.md) (API Gateway → EKS), [ADR-004](docs/adr/ADR-004-observabilidade-datadog.md) (Datadog) |
+| Escolha da nuvem | [RFC-001 no TechChallenger-Api](https://github.com/arthur-lucas-castro/TechChallenger-Api/blob/main/docs/rfc/RFC-001-escolha-da-nuvem.md) |
+| Escalabilidade (HPA e node group) | [ADR-006 no TechChallenger-Api](https://github.com/arthur-lucas-castro/TechChallenger-Api/blob/main/docs/adr/ADR-006-escalabilidade-com-hpa.md) |
+| API publicada | Output `api_gateway_endpoint` (exibido no fim do `infra-apply.yml`); muda quando o API Gateway é recriado |
+| Dashboard e alertas | "Oficina — Operação" no Datadog, link exibido no fim do `observability.yml` |
+
 ## Arquitetura
 
 ```
