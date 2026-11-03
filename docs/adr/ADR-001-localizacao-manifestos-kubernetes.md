@@ -6,7 +6,7 @@
 
 ## Contexto
 
-O projeto da oficina mecânica foi dividido em quatro repositórios: `TechChallenger-serverless`, `TechChallenger-infra-kubernetes`, `TechChallenger-infra-database` e `TechChallenger-Api`. Antes, um único repositório guardava o código da API .NET, o Terraform de VPC/EKS/node group/RDS/ECR, os manifestos Kubernetes (`/k8s`) e o pipeline de CI/CD.
+O projeto da oficina mecânica foi dividido em quatro repositórios: `TechChallenger-severless`, `TechChallenger-infra-kubernetes`, `TechChallenger-infra-database` e `TechChallenger-Api`. Antes, um único repositório guardava o código da API .NET, o Terraform de VPC/EKS/node group/RDS/ECR, os manifestos Kubernetes (`/k8s`) e o pipeline de CI/CD.
 
 O pipeline atual (`ci-cd.yml`) faz o seguinte a cada release (`release/X.Y.Z`):
 
