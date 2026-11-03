@@ -60,6 +60,7 @@ O projeto roda em uma conta **AWS Academy Learner Lab**. Isso impõe restriçõe
 | `lambda.tf` | Lambda de autenticação, SG, log group, integração, rotas `POST /auth*` e permissão de invocação |
 | `addons/metrics-server.yaml` | metrics-server v0.9.0 (pré-requisito do HPA da API) |
 | `addons/datadog-values.yaml` | Values do chart Helm do agente Datadog, aplicado pelo `datadog.yml` |
+| `observability/` | Dashboard, monitores e teste de uptime no Datadog (Terraform com state próprio), aplicados pelo `observability.yml` |
 | `outputs.tf` | Valores consumidos pelos outros repositórios |
 | `scripts/migrar-state-monorepo.sh` | Separação do state do antigo monorepo (uso único) |
 | `docs/adr/` | Decisões de arquitetura |
@@ -106,12 +107,13 @@ Primeiro destrua o **infra-database**. Depois rode o workflow **Terraform Destro
 | Workflow | Gatilho | O que faz |
 |---|---|---|
 | `terraform-ci.yml` | Pull request | `fmt -check` + `validate` (sem credenciais) |
-| `infra-apply.yml` | Manual | `plan` → `apply` → metrics-server |
+| `infra-apply.yml` | Manual, com o tipo de instância dos nodes e o site do Datadog | `plan` → `apply` → metrics-server |
 | `infra-destroy.yml` | Manual | trava do banco → `plan -destroy` → aprovação → `destroy` |
 | `ssm-parameters.yml` | Manual, com os valores informados no disparo | Publica `/techchallenger/db/*`, `/techchallenger/jwt/secret`, `/techchallenger/email/*` e `/techchallenger/datadog/api-key` no SSM |
 | `datadog.yml` | Manual, com o site da conta Datadog | Instala, atualiza ou remove o agente Datadog no cluster (Helm) |
+| `observability.yml` | Manual, com o site e o e-mail de alerta | `plan` → `apply` (ou `destroy`) do dashboard, dos monitores e do teste de uptime em `observability/` |
 
-Secrets do environment `aws-deploy`: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`. Variable: `MEU_USUARIO_GITHUB`.
+Secrets do environment `aws-deploy`: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN` e `DATADOG_APP_KEY` (só para o `observability.yml`). Variable: `MEU_USUARIO_GITHUB`.
 
 No `ssm-parameters.yml`, campo em branco mantém o valor atual, então dá para trocar um parâmetro só. O `db_host` é o output `rds_address` do infra-database, sem a porta, e o `jwt_secret` precisa ter no mínimo 32 bytes. A API lê todos esses parâmetros no deploy, e os `email_*` são obrigatórios para ele passar. Rode esse workflow depois do `infra-apply.yml` do infra-database e, depois de recriar o RDS, informe o host de novo, porque ele pode mudar. Se a senha do banco mudar no secret `DB_PASSWORD` do infra-database, publique a nova aqui também. Valores já carregados pela Lambda ficam em cache até um novo cold start, e a API só os recebe no próximo deploy.
 
@@ -181,6 +183,7 @@ Detalhes e alternativas em [ADR-003](docs/adr/ADR-003-integracao-api-gateway-eks
 - **`LabRole`**: precisa de `ssm:GetParameters`. No Learner Lab não é possível criar uma role própria.
 - **Runtime**: `nodejs20.x`, depreciado pela AWS desde 30/04/2026 e sem novos patches de segurança. A AWS bloqueia a criação de funções nele em 29/07/2027 e a atualização em 31/08/2027.
 - **Destroy**: o SG pode levar dezenas de minutos para ser apagado, enquanto a AWS libera as ENIs da Lambda.
+- **Datadog** ([ADR-004](docs/adr/ADR-004-observabilidade-datadog.md)): com `lambda_datadog_enabled = true` (padrão), a função recebe os layers `Datadog-Extension` (`datadog_extension_layer_version`) e `Datadog-Node20-x` (`datadog_node_layer_version`), publicados pela conta da Datadog. O handler passa a ser o wrapper `/opt/nodejs/node_modules/datadog-lambda-js/handler.handler`, que inicia o tracer e chama o `index.handler` indicado em `DD_LAMBDA_HANDLER`. A extensão lê a API key do SSM pelo ARN em `DD_API_KEY_SSM_ARN` e envia logs, traces e métricas direto ao Datadog, pela mesma saída HTTPS usada para o SSM. `DD_CAPTURE_LAMBDA_PAYLOAD=false` mantém CPF, senha e tokens fora dos traces. O site (`datadog_site`) vem do input do `infra-apply.yml` e precisa ser o mesmo do `datadog.yml`. Publique a key no SSM antes deste apply: sem ela a extensão não tem como enviar nada. Para tirar os layers (fim do trial, por exemplo), aplique com `lambda_datadog_enabled = false`.
 
 ### metrics-server (`addons/`)
 
@@ -203,7 +206,45 @@ Ordem de uso:
 
 A key nunca entra no tfstate nem no repositório: o workflow lê do SSM e cria o Secret `datadog-secret` no namespace `datadog`. Para encerrar a coleta, por exemplo no fim do trial, rode com `action=uninstall`. O `infra-destroy.yml` não precisa desse passo, porque o agente some junto com o cluster.
 
-Sem IAM role própria no Learner Lab, a integração AWS nativa do Datadog (leitura do CloudWatch) não é usada. Métricas do API Gateway e da Lambda ficam a cargo da extensão Datadog na Lambda e do APM da API.
+Sem IAM role própria no Learner Lab, a integração AWS nativa do Datadog (leitura do CloudWatch) não é usada. A Lambda é coberta pela extensão Datadog (seção anterior), e a latência das APIs vem do APM da API. Os access logs do API Gateway continuam só no CloudWatch. Detalhes e alternativas em [ADR-004](docs/adr/ADR-004-observabilidade-datadog.md).
+
+### Dashboard e alertas (`observability/`, `observability.yml`)
+
+Módulo Terraform separado, com state próprio (`observability/terraform.tfstate` no mesmo bucket), que cria no Datadog o que o requisito de monitoramento pede. Fica separado da raiz porque usa outro provider e outras credenciais, e porque dá para recriar o dashboard sem tocar na VPC, no EKS ou na Lambda.
+
+**Dashboard "Oficina — Operação"** (`dashboard.tf`), em cinco grupos:
+
+| Grupo | Widgets |
+|---|---|
+| Ordens de serviço | OS abertas no período, **volume diário**, **tempo médio por status** (Diagnóstico, Execução, Finalização) em ranking e ao longo do tempo, falhas no processamento |
+| API | **Latência** p50/p95/p99, requisições e erros, rotas mais lentas, falhas por controller e tipo |
+| Integrações | **Falhas por integração** (SMTP, banco, Lambda de autenticação), retentativas de SMTP, invocações, erros, duração e cold start da Lambda |
+| Kubernetes | **CPU e memória** por pod, réplicas disponíveis e desejadas (HPA), restarts |
+| Saúde, alertas e logs | Estado dos monitores e do uptime, logs de erro da API e da Lambda com o id de correlação |
+
+**Monitores** (`monitors.tf`), todos com a tag `project:techchallenger`:
+
+| Monitor | Dispara quando |
+|---|---|
+| Falha no processamento de ordens de serviço | Requisição de `OrdemServico`/`StatusOrdemServico` termina em erro interno, inclusive banco fora do ar (5 min) |
+| Taxa de erro da API | Erros/requisições acima de `api_error_rate_threshold` (5%) em 10 min |
+| Latência p95 da API | p95 acima de `api_latency_p95_threshold_seconds` (1 s) em 10 min |
+| Falha em integração | Qualquer `oficina.integracao.falha`, um alerta por integração (10 min) |
+| Erros na Lambda de autenticação | Erro de execução da função (exceção, timeout, falta de memória) |
+| API sem réplicas disponíveis | Deployment sem pod pronto |
+| Pods da API reiniciando | Restart de container em 10 min |
+| Memória / CPU perto do limite | Uso acima de 80% do `limits` do pod (aviso em 70%) |
+
+**Uptime** (`synthetics.tf`): teste HTTP do Datadog a cada 5 minutos em `GET <api_gateway_endpoint>/health`, de `us-east-1` e `sa-east-1`, exigindo `200` em menos de 2 s. Alerta quando as duas regiões falham. O endpoint vem do state da raiz; com a raiz destruída o teste não é criado.
+
+As queries dependem dos nomes usados nos outros repositórios: `service:techchallenger-api` e `kube_deployment:techchallenger-api` (`k8s/aws/deployment.yaml` do TechChallenger-Api), `functionname:techchallenger-fase1-auth` e as métricas `oficina.*` (tabela em `docs/K8S.md` do TechChallenger-Api). Os defaults estão em `observability/variables.tf`.
+
+Ordem de uso:
+
+1. Crie uma **application key** no Datadog (Organization Settings > Application Keys) e cadastre como secret `DATADOG_APP_KEY` no environment `aws-deploy`. A API key já está no SSM (`ssm-parameters.yml`).
+2. Rode o `observability.yml` com `action=apply`, o site da conta e, se quiser notificação, um e-mail. O workflow testa as duas keys no site antes do `plan` e, no fim, mostra o link do dashboard.
+
+O dashboard é sobrescrito a cada apply: mudanças feitas na interface do Datadog se perdem. Para ajustar, edite `dashboard.tf` e rode o workflow. No fim do trial, rode com `action=destroy`.
 
 ### Variáveis
 

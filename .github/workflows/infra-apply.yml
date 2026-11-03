@@ -19,6 +19,17 @@ on:
           - "t3.micro"
           - "t3.small"
         default: "t3.micro"
+      datadog_site:
+        description: "Site da conta Datadog usado pela Lambda de autenticação. Use o mesmo do workflow datadog.yml."
+        required: true
+        type: choice
+        options:
+          - "datadoghq.com"
+          - "us3.datadoghq.com"
+          - "us5.datadoghq.com"
+          - "datadoghq.eu"
+          - "ap1.datadoghq.com"
+        default: "datadoghq.com"
 
 jobs:
   terraform-apply:
@@ -58,6 +69,7 @@ jobs:
       - name: Terraform Plan
         env:
           TF_VAR_node_instance_types: '["${{ github.event.inputs.node_instance_type }}"]'
+          TF_VAR_datadog_site: ${{ github.event.inputs.datadog_site }}
         run: terraform plan -input=false -out=tfplan
 
       - name: Upload do plano como artifact
