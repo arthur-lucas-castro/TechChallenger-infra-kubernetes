@@ -11,7 +11,8 @@ resource "datadog_monitor" "os_falha_processamento" {
 
   # tipo:erro_interno = exceção inesperada ou banco indisponível (ExceptionMiddleware da API).
   # Regras de negócio violadas (dominio, validacao) são respostas esperadas e não alertam.
-  query = "sum(last_5m):sum:oficina.api.falha{tipo:erro_interno AND (controller:ordemservico OR controller:statusordemservico)}.as_count() > 0"
+  # default_zero: a métrica só é enviada quando há falha; sem ela o monitor ficaria em No Data.
+  query = "sum(last_5m):default_zero(sum:oficina.api.falha{tipo:erro_interno AND (controller:ordemservico OR controller:statusordemservico)}.as_count()) > 0"
 
   monitor_thresholds {
     critical = 0
@@ -85,12 +86,14 @@ resource "datadog_monitor" "api_latencia" {
 # ── Integrações ──────────────────────────────────────────────────────────────
 
 resource "datadog_monitor" "integracao_falha" {
-  name     = "[Oficina] Falha em integração: {{integracao.name}}"
+  name     = "[Oficina] Falha em integração"
   type     = "query alert"
   priority = "2"
 
-  # Distribution: enviada pela API (smtp, postgres) e pela Lambda (lambda_auth).
-  query = "sum(last_10m):count:oficina.integracao.falha{*} by {integracao} > 0"
+  # Distribution: enviada pela API (smtp, postgres) e pela Lambda (lambda_auth). Alerta único, e não
+  # um por integração: com "by {integracao}" o default_zero não tem grupos para zerar e o monitor
+  # ficaria em No Data. Qual integração falhou aparece no widget "Falhas nas integrações".
+  query = "sum(last_10m):default_zero(count:oficina.integracao.falha{*}) > 0"
 
   monitor_thresholds {
     critical = 0
@@ -98,11 +101,11 @@ resource "datadog_monitor" "integracao_falha" {
 
   message = <<-EOT
     {{#is_alert}}
-    {{value}} falha(s) na integração {{integracao.name}} nos últimos 10 minutos.
+    {{value}} falha(s) em integrações nos últimos 10 minutos. Veja qual no widget "Falhas nas integrações" do dashboard.
     smtp: notificação de status da OS não enviada. postgres: consulta ao banco falhou.
     lambda_auth: autenticação respondeu 500/503 (banco ou SSM fora do ar).
     {{/is_alert}}
-    {{#is_recovery}}Integração {{integracao.name}} normalizada.{{/is_recovery}}
+    {{#is_recovery}}Integrações normalizadas.{{/is_recovery}}
     ${local.notify}
   EOT
 
@@ -118,7 +121,8 @@ resource "datadog_monitor" "lambda_auth_erros" {
 
   # Erros de execução (exceção não tratada, timeout, falta de memória). Recusas como
   # CPF inválido são respostas 4xx normais e não contam.
-  query = "sum(last_10m):sum:aws.lambda.enhanced.errors{${local.lambda_filter}}.as_count() > 0"
+  # default_zero: a extensão só envia a métrica quando há erro.
+  query = "sum(last_10m):default_zero(sum:aws.lambda.enhanced.errors{${local.lambda_filter}}.as_count()) > 0"
 
   monitor_thresholds {
     critical = 0

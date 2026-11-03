@@ -216,20 +216,20 @@ Módulo Terraform separado, com state próprio (`observability/terraform.tfstate
 
 | Grupo | Widgets |
 |---|---|
-| Ordens de serviço | OS abertas no período, **volume diário**, **tempo médio por status** (Diagnóstico, Execução, Finalização) em ranking e ao longo do tempo, falhas no processamento |
+| Ordens de serviço | OS abertas no período e **volume diário** (`count:oficina.os.abertas`), **tempo médio por status** (Diagnóstico, Execução, Finalização) em ranking e ao longo do tempo, falhas no processamento |
 | API | **Latência** p50/p95/p99, requisições e erros, rotas mais lentas, falhas por controller e tipo |
 | Integrações | **Falhas por integração** (SMTP, banco, Lambda de autenticação), retentativas de SMTP, invocações, erros, duração e cold start da Lambda |
 | Kubernetes | **CPU e memória** por pod, réplicas disponíveis e desejadas (HPA), restarts |
 | Saúde, alertas e logs | Estado dos monitores e do uptime, logs de erro da API e da Lambda com o id de correlação |
 
-**Monitores** (`monitors.tf`), todos com a tag `project:techchallenger`:
+**Monitores** (`monitors.tf`), todos com a tag `project:techchallenger`. Os que dependem de métricas enviadas só quando há falha usam `default_zero()`, então mostram **OK** em vez de **No Data** enquanto nada falha:
 
 | Monitor | Dispara quando |
 |---|---|
 | Falha no processamento de ordens de serviço | Requisição de `OrdemServico`/`StatusOrdemServico` termina em erro interno, inclusive banco fora do ar (5 min) |
 | Taxa de erro da API | Erros/requisições acima de `api_error_rate_threshold` (5%) em 10 min |
 | Latência p95 da API | p95 acima de `api_latency_p95_threshold_seconds` (1 s) em 10 min |
-| Falha em integração | Qualquer `oficina.integracao.falha`, um alerta por integração (10 min) |
+| Falha em integração | Qualquer `oficina.integracao.falha` em 10 min. Alerta único; qual integração falhou aparece no widget "Falhas nas integrações" |
 | Erros na Lambda de autenticação | Erro de execução da função (exceção, timeout, falta de memória) |
 | API sem réplicas disponíveis | Deployment sem pod pronto |
 | Pods da API reiniciando | Restart de container em 10 min |

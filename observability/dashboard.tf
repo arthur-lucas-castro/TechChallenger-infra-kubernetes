@@ -14,7 +14,7 @@ locals {
     {
       definition = {
         type             = "note"
-        content          = "**Ordens de serviço.** Volume pela métrica `oficina.os.criada` (uma por OS aberta). Tempo por status pela `oficina.os.tempo_no_status`, registrada quando a OS sai do status. Finalização = da finalização até a entrega do veículo."
+        content          = "**Ordens de serviço.** Volume pela métrica `oficina.os.abertas` (distribution, um ponto por OS aberta). Tempo por status pela `oficina.os.tempo_no_status`, registrada quando a OS sai do status. Finalização = da finalização até a entrega do veículo."
         background_color = "white"
         font_size        = "14"
         text_align       = "left"
@@ -31,7 +31,7 @@ locals {
         autoscale = true
         requests = [{
           response_format = "scalar"
-          queries         = [{ data_source = "metrics", name = "q1", query = "sum:oficina.os.criada{*}.as_count()", aggregator = "sum" }]
+          queries         = [{ data_source = "metrics", name = "q1", query = "count:oficina.os.abertas{*}", aggregator = "sum" }]
           formulas        = [{ formula = "q1" }]
         }]
       }
@@ -44,7 +44,7 @@ locals {
         requests = [{
           response_format = "timeseries"
           display_type    = "bars"
-          queries         = [{ data_source = "metrics", name = "q1", query = "sum:oficina.os.criada{*}.as_count().rollup(sum, 86400)" }]
+          queries         = [{ data_source = "metrics", name = "q1", query = "count:oficina.os.abertas{*}.rollup(sum, 86400)" }]
           formulas        = [{ formula = "q1", alias = "OS abertas por dia" }]
         }]
       }
@@ -218,11 +218,13 @@ locals {
           response_format = "timeseries"
           display_type    = "line"
           queries = [
-            { data_source = "metrics", name = "p95", query = "p95:aws.lambda.enhanced.duration{${local.lambda_filter}}" },
+            # Percentis não vêm habilitados para esta distribution: média e máxima.
+            { data_source = "metrics", name = "media", query = "avg:aws.lambda.enhanced.duration{${local.lambda_filter}}" },
+            { data_source = "metrics", name = "maxima", query = "max:aws.lambda.enhanced.duration{${local.lambda_filter}}" },
             { data_source = "metrics", name = "init", query = "avg:aws.lambda.enhanced.init_duration{${local.lambda_filter}}" },
           ]
           # As métricas enhanced vêm em segundos.
-          formulas = [{ formula = "p95 * 1000", alias = "p95" }, { formula = "init * 1000", alias = "cold start" }]
+          formulas = [{ formula = "media * 1000", alias = "média" }, { formula = "maxima * 1000", alias = "máxima" }, { formula = "init * 1000", alias = "cold start" }]
         }]
       }
     },
