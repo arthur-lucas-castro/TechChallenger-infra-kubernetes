@@ -47,10 +47,14 @@ As métricas próprias usam o prefixo `oficina.`. Falhas de integração (SMTP n
 
 A latência das APIs vem do APM da própria API, e não do API Gateway. O `x-correlation-id` que o gateway injeta (o `requestId` dos access logs) é gravado nos logs e nos spans da API, então um access log do CloudWatch ainda pode ser cruzado com o Datadog quando preciso.
 
+Dashboard, monitores e teste de uptime são **código**, no módulo `observability/` deste repositório (provider `DataDog/datadog`, state próprio), aplicados pelo workflow `observability.yml`. Criados à mão na interface, eles se perderiam a cada conta de trial nova e não ficariam versionados nem revisáveis em PR.
+
 ## Consequências
 
 - Os nodes precisam ser `t3.small`: no `t3.micro` cada node aceita só 4 pods, e o DaemonSet do agente não cabe.
 - A API key é publicada uma vez no SSM (`/techchallenger/datadog/api-key`) e lida pelo workflow do agente e pela extensão da Lambda. Ela não passa pelo tfstate nem pelos repositórios.
 - O pacote da Lambda deixa o `pg` fora do bundle do esbuild e o envia em `node_modules`, para o tracer conseguir instrumentá-lo.
-- Trocar de conta Datadog é mudar a key no SSM e o site no `infra-apply.yml` e no `datadog.yml`.
+- Trocar de conta Datadog é mudar a API key no SSM e o secret `DATADOG_APP_KEY`, e rodar de novo `infra-apply.yml`, `datadog.yml` e `observability.yml` com o site novo. O dashboard e os alertas voltam iguais.
+- Mudanças no dashboard feitas pela interface são sobrescritas no próximo apply; o caminho é editar `observability/dashboard.tf`.
+- As queries do dashboard e dos monitores dependem dos nomes de service, deployment, função e métricas dos outros repositórios. Renomear algo lá exige ajustar `observability/variables.tf`.
 - Se o ambiente sair do Learner Lab, a integração AWS (Opção B) pode ser somada a esta, trazendo API Gateway e RDS sem mudar o que já existe.

@@ -26,3 +26,10 @@ jobs:
 
       - name: Terraform validate
         run: terraform validate
+
+      # Módulo com state próprio (dashboard e monitores do Datadog), aplicado pelo observability.yml.
+      - name: Terraform init e validate (observability)
+        working-directory: observability
+        run: |
+          terraform init -backend=false -input=false
+          terraform validate

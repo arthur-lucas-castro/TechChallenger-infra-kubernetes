@@ -1,0 +1,137 @@
+name: Observabilidade - Dashboard e alertas no Datadog
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Confirma a alteração do dashboard, dos monitores e do teste de uptime no Datadog?"
+        required: true
+        type: choice
+        options:
+          - "no"
+          - "yes"
+        default: "no"
+      action:
+        description: "apply: cria ou atualiza. destroy: remove tudo do Datadog (ex.: fim do trial)."
+        required: true
+        type: choice
+        options:
+          - "apply"
+          - "destroy"
+        default: "apply"
+      datadog_site:
+        description: "Site da conta Datadog. O mesmo do datadog.yml e do infra-apply.yml."
+        required: true
+        type: choice
+        options:
+          - "datadoghq.com"
+          - "us3.datadoghq.com"
+          - "us5.datadoghq.com"
+          - "datadoghq.eu"
+          - "ap1.datadoghq.com"
+        default: "datadoghq.com"
+      alert_email:
+        description: "E-mail que recebe os alertas. Em branco, os monitores só aparecem no Datadog."
+        required: false
+        type: string
+
+# DATADOG_API_KEY_PARAM: publicado pelo workflow ssm-parameters.yml deste repositório.
+env:
+  DATADOG_API_KEY_PARAM: /techchallenger/datadog/api-key
+
+concurrency:
+  group: datadog-observability
+  cancel-in-progress: false
+
+jobs:
+  observability:
+    name: ${{ github.event.inputs.action }} do dashboard e dos alertas
+    if: github.event.inputs.confirm == 'yes'
+    runs-on: ubuntu-latest
+    environment: aws-deploy
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: observability
+    steps:
+      - name: Checkout do código
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.7.x"
+
+      # Credenciais temporárias do AWS Academy Learner Lab: leem a API key no SSM, o state no S3
+      # e o endpoint do API Gateway no state da raiz.
+      - name: Configurar credenciais AWS
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: us-east-1
+
+      - name: Ler e validar as keys do Datadog
+        env:
+          DATADOG_SITE: ${{ github.event.inputs.datadog_site }}
+          DATADOG_APP_KEY: ${{ secrets.DATADOG_APP_KEY }}
+        run: |
+          if [ -z "$DATADOG_APP_KEY" ]; then
+            echo "::error::Secret DATADOG_APP_KEY ausente no environment aws-deploy. Crie uma application key no Datadog (Organization Settings > Application Keys)."
+            exit 1
+          fi
+          if ! api_key=$(aws ssm get-parameter --name "$DATADOG_API_KEY_PARAM" --with-decryption \
+              --query 'Parameter.Value' --output text 2>/dev/null); then
+            echo "::error::Parâmetro $DATADOG_API_KEY_PARAM não encontrado. Publique-o pelo workflow ssm-parameters.yml."
+            exit 1
+          fi
+          echo "::add-mask::$api_key"
+
+          # Falha aqui, e não no meio do apply, se as keys ou o site estiverem errados.
+          status=$(curl -s -o /dev/null -w '%{http_code}' \
+            -H "DD-API-KEY: $api_key" -H "DD-APPLICATION-KEY: $DATADOG_APP_KEY" \
+            "https://api.$DATADOG_SITE/api/v1/dashboard/lists/manual")
+          if [ "$status" != "200" ]; then
+            echo "::error::Keys recusadas por https://api.$DATADOG_SITE (HTTP $status). Confira a API key, a application key e o site."
+            exit 1
+          fi
+          echo "Keys válidas para $DATADOG_SITE."
+
+          # Arquivo de ambiente do runner, só visível aos próximos passos deste job.
+          {
+            echo "TF_VAR_datadog_api_key=$api_key"
+            echo "TF_VAR_datadog_app_key=$DATADOG_APP_KEY"
+          } >> "$GITHUB_ENV"
+
+      - name: Terraform Init
+        run: terraform init -input=false
+
+      - name: Terraform Plan
+        env:
+          TF_VAR_datadog_site: ${{ github.event.inputs.datadog_site }}
+          TF_VAR_alert_email: ${{ github.event.inputs.alert_email }}
+        run: |
+          if [ "${{ github.event.inputs.action }}" = "destroy" ]; then
+            terraform plan -destroy -input=false -out=tfplan
+          else
+            terraform plan -input=false -out=tfplan
+          fi
+
+      - name: Terraform Apply
+        run: terraform apply -input=false -auto-approve tfplan
+
+      - name: Exibir links
+        if: github.event.inputs.action == 'apply'
+        env:
+          DATADOG_SITE: ${{ github.event.inputs.datadog_site }}
+        run: |
+          # datadoghq.com e datadoghq.eu usam o prefixo app.; os demais sites já são o host do app.
+          case "$DATADOG_SITE" in
+            datadoghq.com|datadoghq.eu) app="app.$DATADOG_SITE" ;;
+            *) app="$DATADOG_SITE" ;;
+          esac
+          echo "Dashboard: https://$app$(terraform output -raw dashboard_url)"
+          echo "Uptime:    $(terraform output -raw uptime_test_url)"
+          terraform output monitor_ids
